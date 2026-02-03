@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Influenza Case Rates Explorer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 1rem 1.5rem 2rem;
+      background: #f5f5f7;
+      color: #222;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      margin-bottom: 0.25rem;
+    }
+
+    h2 {
+      font-size: 1.1rem;
+      margin: 1.5rem 0 0.5rem;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin: 0.75rem 0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+
+    label {
+      font-size: 0.9rem;
+      font-weight: 600;
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+
+    select, input[type="file"], input[type="range"] {
+      margin-top: 0.15rem;
+      margin-bottom: 0.5rem;
+    }
+
+    select {
+      padding: 0.25rem 0.4rem;
+    }
+
+    .controls-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      align-items: flex-start;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 0.5rem;
+    }
+
+    .stat {
+      background: #fafafa;
+      border-radius: 4px;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #e0e0e0;
+      font-size: 0.88rem;
+    }
+
+    .stat-label {
+      font-weight: 600;
+      display: block;
+      margin-bottom: 0.15rem;
+    }
+
+    .stat-value {
+      font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+
+    .hint {
+      font-size: 0.8rem;
+      color: #666;
+      margin-top: 0.25rem;
+    }
+
+    canvas {
+      max-height: 480px;
+    }
+
+    .error {
+      color: #b00020;
+      font-size: 0.9rem;
+      margin-top: 0.25rem;
+    }
+
+    .file-hint {
+      font-size: 0.82rem;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>Influenza Case Rates Explorer</h1>
+  <p class="hint">
+    Upload a CSV with columns <code>date,country,cases</code>. Then choose a country and a 3‑year window to visualize case rates over time.
+  </p>
+
+  <div class="card">
+    <h2>1. Data input</h2>
+    <label for="fileInput">Influenza data CSV</label>
+    <input type="file" id="fileInput" accept=".csv,text/csv" />
+    <div class="file-hint">
+      Expected columns: <code>date</code> (YYYY-MM-DD), <code>country</code>, <code>cases</code> (numeric).
+    </div>
+    <div id="loadError" class="error"></div>
+  </div>
+
+  <div class="card">
+    <h2>2. Filters (country & 3‑year window)</h2>
+    <div class="controls-grid">
+      <div>
+        <label for="countrySelect">Country</label>
+        <select id="countrySelect" disabled>
+          <option value="">Load data first…</option>
+        </select>
+        <div class="hint">Only countries present in the uploaded data will appear here.</div>
+      </div>
+
+      <div>
+        <label for="startYearRange">
+          3‑year window start year:
+          <span id="startYearLabel">—</span>
+        </label>
+        <input type="range" id="startYearRange" min="0" max="0" step="1" disabled />
+        <div class="hint">
+          The plot will show data from the selected start year through start year + 2
+          (a 3‑year window).
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. Influenza case rates over time (3‑year window)</h2>
+    <canvas id="casesChart"></canvas>
+    <div id="chartHint" class="hint">
+      Load data and select a country to see the time series.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. Summary statistics (selected country & 3‑year window)</h2>
+    <div class="stat-grid">
+      <div class="stat">
+        <span class="stat-label">Country</span>
+        <span id="statCountry" class="stat-value">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Window</span>
+        <span id="statWindow" class="stat-value">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Total cases</span>
+        <span id="statTotal" class="stat-value">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Mean cases per observation</span>
+        <span id="statMean" class="stat-value">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Max cases</span>
+        <span id="statMax" class="stat-value">—</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- State ---
+    let allRecords = [];      // { date: Date, country: string, cases: number }
+    let chart = null;
+
+    const fileInput       = document.getElementById('fileInput');
+    const loadErrorEl     = document.getElementById('loadError');
+    const countrySelect   = document.getElementById('countrySelect');
+    const startYearRange  = document.getElementById('startYearRange');
+    const startYearLabel  = document.getElementById('startYearLabel');
+    const chartHint       = document.getElementById('chartHint');
+
+    const statCountryEl   = document.getElementById('statCountry');
+    const statWindowEl    = document.getElementById('statWindow');
+    const statTotalEl     = document.getElementById('statTotal');
+    const statMeanEl      = document.getElementById('statMean');
+    const statMaxEl       = document.getElementById('statMax');
+
+    // --- Helpers ---
+    function parseCSV(text) {
+      const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
+      if (lines.length === 0) return [];
+
+      const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+      const idxDate    = header.indexOf('date');
+      const idxCountry = header.indexOf('country');
+      const idxCases   = header.indexOf('cases');
+
+      if (idxDate === -1 || idxCountry === -1 || idxCases === -1) {
+        throw new Error('CSV must contain columns: date, country, cases (case-insensitive).');
+      }
+
+      const records = [];
+      for (let i = 1; i < lines.length; i++) {
+        const row = lines[i].split(',');
+        if (row.length < header.length) continue;
+
+        const dateStr = row[idxDate].trim();
+        const country = row[idxCountry].trim();
+        const casesStr = row[idxCases].trim();
+
+        if (!dateStr || !country || !casesStr) continue;
+
+        const d = new Date(dateStr);
+        if (isNaN(d)) continue;
+
+        const c = Number(casesStr);
+        if (!isFinite(c)) continue;
+
+        records.push({ date: d, country, cases: c });
+      }
+
+      return records;
+    }
+
+    function updateCountryOptions() {
+      const countries = Array.from(new Set(allRecords.map(r => r.country))).sort();
+      countrySelect.innerHTML = '';
+
+      if (countries.length === 0) {
+        countrySelect.disabled = true;
+        countrySelect.innerHTML = '<option value="">No countries found</option>';
+        return;
+      }
+
+      countries.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        countrySelect.appendChild(opt);
+      });
+
+      countrySelect.disabled = false;
+    }
+
+    function getYear(d) {
+      return d.getFullYear();
+    }
+
+    function updateYearRange() {
+      const selectedCountry = countrySelect.value;
+      if (!selectedCountry) {
+        startYearRange.disabled = true;
+        startYearLabel.textContent = '—';
+        return;
+      }
+
+      const recordsForCountry = allRecords.filter(r => r.country === selectedCountry);
+      if (recordsForCountry.length === 0) {
+        startYearRange.disabled = true;
+        startYearLabel.textContent = '—';
+        return;
+      }
+
+      const years = recordsForCountry.map(r => getYear(r.date));
+      const minYear = Math.min(...years);
+      const maxYear = Math.max(...years);
+
+      // We need at least 3 years to define a 3-year window
+      if (maxYear - minYear < 2) {
+        startYearRange.disabled = true;
+        startYearLabel.textContent = 'Insufficient span (< 3 years)';
+        return;
+      }
+
+      startYearRange.min = String(minYear);
+      startYearRange.max = String(maxYear - 2); // start + 2 <= max
+      startYearRange.value = String(minYear);
+      startYearRange.disabled = false;
+      startYearLabel.textContent = minYear;
+
+      // Immediately update chart for default window
+      updateChartAndStats();
+    }
+
+    function filterDataForSelection() {
+      const country = countrySelect.value;
+      if (!country) return [];
+
+      if (startYearRange.disabled) {
+        // No 3-year window possible; return all data for country as fallback
+        return allRecords
+          .filter(r => r.country === country)
+          .sort((a, b) => a.date - b.date);
+      }
+
+      const startYear = Number(startYearRange.value);
+      const endYear = startYear + 2;
+
+      return allRecords
+        .filter(r => {
+          return (
+            r.country === country &&
+            getYear(r.date) >= startYear &&
+            getYear(r.date) <= endYear
+          );
+        })
+        .sort((a, b) => a.date - b.date);
+    }
+
+    function updateChartAndStats() {
+      const country = countrySelect.value;
+      const hasCountry = !!country;
+
+      const filtered = filterDataForSelection();
+      const hasData = filtered.length > 0;
+
+      const using3YearWindow = !startYearRange.disabled;
+
+      // Update chart hint
+      if (!hasCountry) {
+        chartHint.textContent = 'Select a country to see the time series.';
+      } else if (!hasData) {
+        chartHint.textContent = 'No observations for the selected country and window.';
+      } else if (using3YearWindow) {
+        chartHint.textContent = 'Showing influenza cases for a 3‑year window.';
+      } else {
+        chartHint.textContent = 'Showing all data available for the selected country.';
+      }
+
+      // Prepare data for the chart
+      const labels = filtered.map(r => r.date.toISOString().slice(0, 10));
+      const values = filtered.map(r => r.cases);
+
+      const ctx = document.getElementById('casesChart').getContext('2d');
+
+      if (chart) {
+        chart.destroy();
+      }
+
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: country || 'Cases',
+            data: values,
+            borderColor: 'rgba(46, 134, 222, 1)',
+            backgroundColor: 'rgba(46, 134, 222, 0.1)',
+            borderWidth: 2,
+            pointRadius: 2,
+            pointHoverRadius: 4,
+            tension: 0.2,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: {
+              title: {
+                display: true,
+                text: 'Date'
+              },
+              ticks: {
+                maxTicksLimit: 10
+              }
+            },
+            y: {
+              title: {
+                display: true,
+                text: 'Cases (rate or count)'
+              },
+              beginAtZero: true
+            }
+          },
+          plugins: {
+            legend: {
+              display: true
+            },
+            tooltip: {
+              mode: 'index',
+              intersect: false
+            }
+          }
+        }
+      });
+
+      // Update stats
+      statCountryEl.textContent = country || '—';
+
+      if (using3YearWindow && hasCountry) {
+        const startYear = Number(startYearRange.value);
+        const endYear = startYear + 2;
+        statWindowEl.textContent = hasData
+          ? `${startYear} – ${endYear}`
+          : `No data in 3‑year window`;
+      } else if (hasCountry && !using3YearWindow) {
+        statWindowEl.textContent = 'All available years';
+      } else {
+        statWindowEl.textContent = '—';
+      }
+
+      if (!hasData) {
+        statTotalEl.textContent = '—';
+        statMeanEl.textContent = '—';
+        statMaxEl.textContent = '—';
+        return;
+      }
+
+      const total = values.reduce((sum, v) => sum + v, 0);
+      const mean = total / values.length;
+      const max = Math.max(...values);
+
+      statTotalEl.textContent = total.toFixed(2);
+      statMeanEl.textContent = mean.toFixed(2);
+      statMaxEl.textContent = max.toFixed(2);
+    }
+
+    // --- Event handlers ---
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      loadErrorEl.textContent = '';
+
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const records = parseCSV(text);
+        if (records.length === 0) {
+          throw new Error('No valid rows found in CSV.');
+        }
+        allRecords = records;
+        updateCountryOptions();
+
+        // Reset selection & chart
+        chartHint.textContent = 'Data loaded. Select a country to see the 3‑year window.';
+        countrySelect.value = '';
+        startYearRange.disabled = true;
+        startYearLabel.textContent = '—';
+        statCountryEl.textContent = '—';
+        statWindowEl.textContent = '—';
+        statTotalEl.textContent = '—';
+        statMeanEl.textContent = '—';
+        statMaxEl.textContent = '—';
+
+        if (chart) {
+          chart.destroy();
+          chart = null;
+        }
+      } catch (err) {
+        console.error(err);
+        loadErrorEl.textContent = err.message || 'Failed to load or parse CSV.';
+      }
+    });
+
+    countrySelect.addEventListener('change', () => {
+      updateYearRange();
+    });
+
+    startYearRange.addEventListener('input', () => {
+      const year = Number(startYearRange.value);
+      startYearLabel.textContent = isFinite(year) ? year : '—';
+      updateChartAndStats();
+    });
+  </script>
+</body>
+</html>
