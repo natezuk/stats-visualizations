@@ -152,7 +152,8 @@ with col1:
         n = min_n
         
         # Null distribution: t with n-1 df, noncentrality=0
-        x = np.linspace(-5, 8, 500)
+        #x = np.linspace(-5, 8, 500)
+        x = np.linspace(min_t - 4, max(8, effect_size * np.sqrt(n) + 4), 500)
         null_dist = stats.t(df=n - 1)
         alt_dist = stats.nct(df=n - 1, nc=effect_size * np.sqrt(n))
         
